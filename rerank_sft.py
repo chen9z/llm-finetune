@@ -27,7 +27,7 @@ logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:
 def main():
     model_name = "answerdotai/ModernBERT-base"
 
-    train_batch_size = 128
+    train_batch_size = 64
     num_epochs = 1
     num_hard_negatives = 5  # How many hard negatives should be mined for each question-answer pair
 
@@ -47,8 +47,8 @@ def main():
 
     # 2b. Modify our training dataset to include hard negatives using a very efficient embedding model
     embedding_model = SentenceTransformer("sentence-transformers/static-retrieval-mrl-en-v1", device="cpu")
-    cache_path="gooaq-hard-train-cached"
-    if os.path.exists(cache_path):
+    cache_path="./cache/gooaq-hard-train-cached"
+    if not os.path.exists(cache_path):
         hard_train_dataset = mine_hard_negatives(
             train_dataset,
             embedding_model,
@@ -62,12 +62,13 @@ def main():
             # The output format is (query, passage, label), as required by BinaryCrossEntropyLoss
             use_faiss=True,
         )
+        hard_train_dataset.save_to_disk(cache_path)
     else:
         hard_train_dataset=load_from_disk(cache_path)
     logging.info(hard_train_dataset)
 
     # 2c. (Optionally) Save the hard training dataset to disk
-    # hard_train_dataset.save_to_disk("gooaq-hard-train")
+    # 
     # Load again with:
     # hard_train_dataset = load_from_disk("gooaq-hard-train")
 
@@ -130,7 +131,6 @@ def main():
         dataloader_num_workers=8,
         dataloader_pin_memory=True,
         dataloader_prefetch_factor=4,
-
         load_best_model_at_end=True,
         metric_for_best_model="eval_gooaq-dev_ndcg@10",
         # Optional tracking/debugging parameters:
