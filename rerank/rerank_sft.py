@@ -1,8 +1,9 @@
 import logging
+import os.path
 import traceback
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.cross_encoder import (
@@ -26,19 +27,12 @@ logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:
 def main():
     model_name = "answerdotai/ModernBERT-base"
 
-    train_batch_size = 16
+    train_batch_size = 128
     num_epochs = 1
     num_hard_negatives = 5  # How many hard negatives should be mined for each question-answer pair
 
     # 1a. Load a model to finetune with 1b. (Optional) model card data
-    model = CrossEncoder(
-        model_name,
-        model_card_data=CrossEncoderModelCardData(
-            language="en",
-            license="apache-2.0",
-            model_name="ModernBERT-base trained on GooAQ",
-        ),
-    )
+    model = CrossEncoder(model_name)
     print("Model max length:", model.max_length)
     print("Model num labels:", model.num_labels)
 
@@ -53,18 +47,23 @@ def main():
 
     # 2b. Modify our training dataset to include hard negatives using a very efficient embedding model
     embedding_model = SentenceTransformer("sentence-transformers/static-retrieval-mrl-en-v1", device="cpu")
-    hard_train_dataset = mine_hard_negatives(
-        train_dataset,
-        embedding_model,
-        num_negatives=num_hard_negatives,  # How many negatives per question-answer pair
-        margin=0,  # Similarity between query and negative samples should be x lower than query-positive similarity
-        range_min=0,  # Skip the x most similar samples
-        range_max=100,  # Consider only the x most similar samples
-        sampling_strategy="top",  # Sample the top negatives from the range
-        batch_size=4096,  # Use a batch size of 4096 for the embedding model
-        output_format="labeled-pair",  # The output format is (query, passage, label), as required by BinaryCrossEntropyLoss
-        use_faiss=True,
-    )
+    cache_path="gooaq-hard-train-cached"
+    if os.path.exists(cache_path):
+        hard_train_dataset = mine_hard_negatives(
+            train_dataset,
+            embedding_model,
+            num_negatives=num_hard_negatives,  # How many negatives per question-answer pair
+            margin=0,  # Similarity between query and negative samples should be x lower than query-positive similarity
+            range_min=0,  # Skip the x most similar samples
+            range_max=100,  # Consider only the x most similar samples
+            sampling_strategy="top",  # Sample the top negatives from the range
+            batch_size=4096,  # Use a batch size of 4096 for the embedding model
+            output_format="labeled-pair",
+            # The output format is (query, passage, label), as required by BinaryCrossEntropyLoss
+            use_faiss=True,
+        )
+    else:
+        hard_train_dataset=load_from_disk(cache_path)
     logging.info(hard_train_dataset)
 
     # 2c. (Optionally) Save the hard training dataset to disk
@@ -128,19 +127,24 @@ def main():
         warmup_ratio=0.1,
         fp16=False,  # Set to False if you get an error that your GPU can't run on FP16
         bf16=True,  # Set to True if you have a GPU that supports BF16
-        dataloader_num_workers=4,
+        dataloader_num_workers=8,
+        dataloader_pin_memory=True,
+        dataloader_prefetch_factor=4,
+
         load_best_model_at_end=True,
         metric_for_best_model="eval_gooaq-dev_ndcg@10",
         # Optional tracking/debugging parameters:
         eval_strategy="steps",
-        eval_steps=4000,
+        eval_steps=2000,
         save_strategy="steps",
-        save_steps=4000,
+        save_steps=2000,
         save_total_limit=2,
-        logging_steps=1000,
+        logging_steps=500,
         logging_first_step=True,
         run_name=run_name,  # Will be used in W&B if `wandb` is installed
         seed=12,
+        torch_compile=True,
+        optim="adamw_torch_fused"
     )
 
     # 6. Create the trainer & start training
